@@ -97,9 +97,9 @@ CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&
 
 
 # ---------------------------------------------------------
-# 2. Function Parsing Tanggal Super Agresif
+# 2. Function Parsing Tanggal Standar Google Form (MM/DD/YYYY First)
 # ---------------------------------------------------------
-def parse_mixed_date(date_val):
+def parse_gform_date(date_val):
   if pd.isna(date_val) or str(date_val).strip() == "" or str(date_val).strip().lower() in ["nan", "none", "-", "nat"]:
     return pd.NaT
   
@@ -117,7 +117,8 @@ def parse_mixed_date(date_val):
       lower_str = lower_str.replace(k, v)
       break
 
-  for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%y", "%d/%m/%y", "%d-%b-%Y", "%d %b %Y"):
+  # Prioritaskan format Google Form US Locale (MM/DD/YYYY) & ISO (YYYY-MM-DD) terlebih dahulu
+  for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%y", "%d/%m/%Y", "%d-%m-%Y", "%d-%b-%Y", "%d %b %Y"):
     try:
       parsed = pd.to_datetime(lower_str, format=fmt, errors='coerce')
       if not pd.isna(parsed):
@@ -126,7 +127,7 @@ def parse_mixed_date(date_val):
       continue
 
   try:
-    parsed = pd.to_datetime(date_str, errors='coerce', dayfirst=True)
+    parsed = pd.to_datetime(date_str, errors='coerce', dayfirst=False)
     if not pd.isna(parsed):
       return parsed
   except:
@@ -140,20 +141,18 @@ def load_and_process_google_sheet():
   df = pd.read_csv(CSV_URL)
   df.columns = df.columns.astype(str).str.strip()
 
+  # Lock nama kolom persis sesuai tabel Google Sheets
   col_incident = "Tanggal Insiden"
   col_lappol = "Tanggal Pelaporan Kepolisian"
+  col_ket = "Keterangan Asuransi"
 
   submit_candidates = [c for c in df.columns if any(k in c.lower() for k in ["submit", "submission"])]
   col_submit_date = submit_candidates[0] if submit_candidates else None
 
-  # Deteksi Kolom Keterangan Asuransi secara presisi
-  ket_candidates = [c for c in df.columns if any(k in c.lower() for k in ["keterangan", "asuransi", "claim_desc", "kategori"])]
-  col_ket = ket_candidates[0] if ket_candidates else None
-
-  # Eksekusi parsing tanggal
-  df["_Insiden_Parsed"] = df[col_incident].apply(parse_mixed_date) if col_incident in df.columns else pd.NaT
-  df["_LapPol_Parsed"] = df[col_lappol].apply(parse_mixed_date) if col_lappol in df.columns else pd.NaT
-  df["_Submit_Parsed"] = df[col_submit_date].apply(parse_mixed_date) if (col_submit_date and col_submit_date in df.columns) else pd.NaT
+  # Eksekusi parsing tanggal dengan parser Google Form
+  df["_Insiden_Parsed"] = df[col_incident].apply(parse_gform_date) if col_incident in df.columns else pd.NaT
+  df["_LapPol_Parsed"] = df[col_lappol].apply(parse_gform_date) if col_lappol in df.columns else pd.NaT
+  df["_Submit_Parsed"] = df[col_submit_date].apply(parse_gform_date) if (col_submit_date and col_submit_date in df.columns) else pd.NaT
 
   today = pd.Timestamp(datetime.now().date())
 
@@ -201,10 +200,16 @@ def load_and_process_google_sheet():
       return "Rusak Parah"
     return "Blank"
 
-  if col_ket and col_ket in df.columns:
+  if col_ket in df.columns:
     df["_Clean_Keterangan"] = df[col_ket].apply(clean_keterangan)
   else:
-    df["_Clean_Keterangan"] = "Blank"
+    # Fallback jika ada spasi tersembunyi di header
+    fallback_ket = [c for c in df.columns if "keterangan" in c.lower()]
+    if fallback_ket:
+      col_ket = fallback_ket[0]
+      df["_Clean_Keterangan"] = df[col_ket].apply(clean_keterangan)
+    else:
+      df["_Clean_Keterangan"] = "Blank"
 
   # Parsing Nilai BOQ
   boq_price_cols = [
