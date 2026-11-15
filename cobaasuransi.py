@@ -97,7 +97,7 @@ CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&
 
 
 # ---------------------------------------------------------
-# 2. Function Parsing Tanggal Standar Google Form (MM/DD/YYYY First)
+# 2. Function Parsing Tanggal Standar Google Form
 # ---------------------------------------------------------
 def parse_gform_date(date_val):
   if pd.isna(date_val) or str(date_val).strip() == "" or str(date_val).strip().lower() in ["nan", "none", "-", "nat"]:
@@ -117,7 +117,6 @@ def parse_gform_date(date_val):
       lower_str = lower_str.replace(k, v)
       break
 
-  # Prioritaskan format Google Form US Locale (MM/DD/YYYY) & ISO (YYYY-MM-DD) terlebih dahulu
   for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%y", "%d/%m/%Y", "%d-%m-%Y", "%d-%b-%Y", "%d %b %Y"):
     try:
       parsed = pd.to_datetime(lower_str, format=fmt, errors='coerce')
@@ -141,7 +140,6 @@ def load_and_process_google_sheet():
   df = pd.read_csv(CSV_URL)
   df.columns = df.columns.astype(str).str.strip()
 
-  # Lock nama kolom persis sesuai tabel Google Sheets
   col_incident = "Tanggal Insiden"
   col_lappol = "Tanggal Pelaporan Kepolisian"
   col_ket = "Keterangan Asuransi"
@@ -149,7 +147,6 @@ def load_and_process_google_sheet():
   submit_candidates = [c for c in df.columns if any(k in c.lower() for k in ["submit", "submission"])]
   col_submit_date = submit_candidates[0] if submit_candidates else None
 
-  # Eksekusi parsing tanggal dengan parser Google Form
   df["_Insiden_Parsed"] = df[col_incident].apply(parse_gform_date) if col_incident in df.columns else pd.NaT
   df["_LapPol_Parsed"] = df[col_lappol].apply(parse_gform_date) if col_lappol in df.columns else pd.NaT
   df["_Submit_Parsed"] = df[col_submit_date].apply(parse_gform_date) if (col_submit_date and col_submit_date in df.columns) else pd.NaT
@@ -166,7 +163,6 @@ def load_and_process_google_sheet():
   df["Aging Submission (Hari)"] = (today - df["_Submit_Parsed"].dt.normalize()).dt.days if (col_submit_date and col_submit_date in df.columns) else np.nan
   df["Aging Submission (Hari)"] = df["Aging Submission (Hari)"].apply(lambda x: x if pd.notna(x) and x >= 0 else np.nan)
 
-  # Status submission bersih
   def get_submission_status(row):
     raw_sub_val = row[col_submit_date] if (col_submit_date and col_submit_date in df.columns) else None
     if pd.isna(raw_sub_val) or str(raw_sub_val).strip() == "" or str(raw_sub_val).strip().lower() in ["nan", "none", "-"]:
@@ -178,7 +174,6 @@ def load_and_process_google_sheet():
   # Possible Reject Flag (Strict > 30 Hari Incident)
   df["Possible Reject"] = df["Aging Incident (Hari)"].apply(lambda x: "Possible Reject (>30 Hari)" if pd.notna(x) and x > 30 else "Aman (≤30 Hari)")
 
-  # Scoreboard Status
   def get_scoreboard_status(row):
     aging = row["Aging Incident (Hari)"]
     if pd.notna(aging) and aging > 30:
@@ -189,7 +184,6 @@ def load_and_process_google_sheet():
 
   df["Status Aging Pelaporan"] = df.apply(get_scoreboard_status, axis=1)
 
-  # Normalisasi Kolom Keterangan Asuransi menjadi 3 kategori rapi
   def clean_keterangan(val):
     if pd.isna(val) or str(val).strip() == "" or str(val).strip().lower() in ["nan", "none", "-", "nat"]:
       return "Blank"
@@ -203,15 +197,12 @@ def load_and_process_google_sheet():
   if col_ket in df.columns:
     df["_Clean_Keterangan"] = df[col_ket].apply(clean_keterangan)
   else:
-    # Fallback jika ada spasi tersembunyi di header
     fallback_ket = [c for c in df.columns if "keterangan" in c.lower()]
     if fallback_ket:
-      col_ket = fallback_ket[0]
-      df["_Clean_Keterangan"] = df[col_ket].apply(clean_keterangan)
+      df["_Clean_Keterangan"] = df[fallback_ket[0]].apply(clean_keterangan)
     else:
       df["_Clean_Keterangan"] = "Blank"
 
-  # Parsing Nilai BOQ
   boq_price_cols = [
       c for c in df.columns 
       if any(k in c.lower() for k in ["boq", "harga", "cost", "nilai", "amount", "total"])
@@ -267,35 +258,59 @@ try:
     df_filtered = df_filtered[df_filtered["Status Aging Pelaporan"].isin(selected_status)]
 
   # ---------------------------------------------------------
-  # 4. Top Metric Scoreboard (Akurat Strict > 30 Hari)
+  # 4. Top Metric Scoreboard (Custom Cards dengan Icon & Akurat)
   # ---------------------------------------------------------
   total_site = len(df_filtered)
   count_sudah_submit = len(df_filtered[df_filtered["Status Submission"] == "Sudah Submit"])
   count_belum_submit = len(df_filtered[df_filtered["Status Submission"] == "Belum Submit"])
   
-  # Possible Reject murni > 30 hari (strict dan aman dari NaT)
+  # Possible Reject murni strict > 30 hari
   count_possible_reject = len(df_filtered[(df_filtered["Aging Incident (Hari)"].notna()) & (df_filtered["Aging Incident (Hari)"] > 30)])
 
-  m1, m2, m3, m4 = st.columns(4)
-  
-  with m1:
-    st.metric(label="Total Incident", value=f"{total_site} Site")
-    
-  with m2:
-    st.metric(label="Sudah Submit", value=f"{count_sudah_submit} Site")
-    
-  with m3:
-    st.metric(label="Belum Submit (NY Submit)", value=f"{count_belum_submit} Site")
+  sc1, sc2, sc3, sc4 = st.columns(4)
+
+  with sc1:
+    st.markdown(
+        f"""
+        <div style="padding: 16px; border-radius: 8px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-left: 5px solid #0284c7;">
+            <p style="margin: 0; font-size: 13px; color: #64748b; font-weight: 600;">📊 TOTAL INCIDENT</p>
+            <h2 style="margin: 6px 0 0 0; color: #0f172a;">{total_site} Site</h2>
+        </div>
+        """, unsafe_allow_html=True
+    )
+
+  with sc2:
+    st.markdown(
+        f"""
+        <div style="padding: 16px; border-radius: 8px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-left: 5px solid #16a34a;">
+            <p style="margin: 0; font-size: 13px; color: #15803d; font-weight: 600;">✅ SUDAH SUBMIT</p>
+            <h2 style="margin: 6px 0 0 0; color: #166534;">{count_sudah_submit} Site</h2>
+        </div>
+        """, unsafe_allow_html=True
+    )
+
+  with sc3:
     aging_list = df_filtered[df_filtered["Status Submission"] == "Belum Submit"]["Aging Incident (Hari)"].dropna().tolist()
     aging_str = ", ".join([f"{int(a)}h" for a in aging_list]) if aging_list else "0h"
-    st.caption(f"⚠️ Aging Belum Submit: {aging_str}")
-    
-  with m4:
-    st.metric(
-        label="Possible Reject", 
-        value=f"{count_possible_reject} Site", 
-        delta=">30 Hari Incident", 
-        delta_color="inverse"
+    st.markdown(
+        f"""
+        <div style="padding: 16px; border-radius: 8px; background-color: #fff7ed; border: 1px solid #ffedd5; border-left: 5px solid #f97316;">
+            <p style="margin: 0; font-size: 13px; color: #c2410c; font-weight: 600;">⏳ BELUM SUBMIT (NY)</p>
+            <h2 style="margin: 6px 0 2px 0; color: #9a3412;">{count_belum_submit} Site</h2>
+            <p style="margin: 0; font-size: 11px; color: #7c2d12;">Aging: {aging_str}</p>
+        </div>
+        """, unsafe_allow_html=True
+    )
+
+  with sc4:
+    st.markdown(
+        f"""
+        <div style="padding: 16px; border-radius: 8px; background-color: #fef2f2; border: 1px solid #fecaca; border-left: 5px solid #dc2626;">
+            <p style="margin: 0; font-size: 13px; color: #b91c1c; font-weight: 600;">⚠️ POSSIBLE REJECT</p>
+            <h2 style="margin: 6px 0 2px 0; color: #991b1b;">{count_possible_reject} Site</h2>
+            <p style="margin: 0; font-size: 11px; color: #7f1d1d;">>30 Hari Incident</p>
+        </div>
+        """, unsafe_allow_html=True
     )
 
   st.markdown("---")
