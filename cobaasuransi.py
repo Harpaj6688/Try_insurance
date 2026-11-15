@@ -146,6 +146,10 @@ def load_and_process_google_sheet():
   submit_candidates = [c for c in df.columns if any(k in c.lower() for k in ["submit", "submission"])]
   col_submit_date = submit_candidates[0] if submit_candidates else None
 
+  # Deteksi Kolom Keterangan Asuransi secara presisi
+  ket_candidates = [c for c in df.columns if any(k in c.lower() for k in ["keterangan", "asuransi", "claim_desc", "kategori"])]
+  col_ket = ket_candidates[0] if ket_candidates else None
+
   # Eksekusi parsing tanggal
   df["_Insiden_Parsed"] = df[col_incident].apply(parse_mixed_date) if col_incident in df.columns else pd.NaT
   df["_LapPol_Parsed"] = df[col_lappol].apply(parse_mixed_date) if col_lappol in df.columns else pd.NaT
@@ -172,7 +176,7 @@ def load_and_process_google_sheet():
 
   df["Status Submission"] = df.apply(get_submission_status, axis=1)
 
-  # Possible Reject Flag (>30 Hari Incident)
+  # Possible Reject Flag (Strict > 30 Hari Incident)
   df["Possible Reject"] = df["Aging Incident (Hari)"].apply(lambda x: "Possible Reject (>30 Hari)" if pd.notna(x) and x > 30 else "Aman (≤30 Hari)")
 
   # Scoreboard Status
@@ -180,13 +184,27 @@ def load_and_process_google_sheet():
     aging = row["Aging Incident (Hari)"]
     if pd.notna(aging) and aging > 30:
       return "Possible Reject"
-    
     if row["Status Submission"] == "Sudah Submit":
       return "Sudah Submit Asuransi"
-    
     return "Belum Submit"
 
   df["Status Aging Pelaporan"] = df.apply(get_scoreboard_status, axis=1)
+
+  # Normalisasi Kolom Keterangan Asuransi menjadi 3 kategori rapi
+  def clean_keterangan(val):
+    if pd.isna(val) or str(val).strip() == "" or str(val).strip().lower() in ["nan", "none", "-", "nat"]:
+      return "Blank"
+    txt = str(val).strip().lower()
+    if "kehilangan" in txt or "hilang" in txt:
+      return "Rusak Parah & Kehilangan"
+    elif "rusak" in txt:
+      return "Rusak Parah"
+    return "Blank"
+
+  if col_ket and col_ket in df.columns:
+    df["_Clean_Keterangan"] = df[col_ket].apply(clean_keterangan)
+  else:
+    df["_Clean_Keterangan"] = "Blank"
 
   # Parsing Nilai BOQ
   boq_price_cols = [
@@ -208,18 +226,18 @@ def load_and_process_google_sheet():
   else:
     df["_Parsed_BOQ_Value"] = 0.0
 
-  return df, today, col_incident, col_lappol
+  return df, today, col_incident, col_lappol, col_ket
 
 
 try:
-  df, today_date, det_inc, det_lap = load_and_process_google_sheet()
+  df, today_date, det_inc, det_lap, det_ket = load_and_process_google_sheet()
 
   # ---------------------------------------------------------
   # 3. Sidebar Filter Utama
   # ---------------------------------------------------------
   st.sidebar.header("🔍 Filter Dashboard")
   st.sidebar.info(f"📅 **Tanggal System:**\n{today_date.strftime('%d %B %Y')}")
-  st.sidebar.caption(f"📌 **Kolom Terhubung:**\n- Insiden: `{det_inc}`\n- LapPol: `{det_lap}`")
+  st.sidebar.caption(f"📌 **Kolom Terhubung:**\n- Insiden: `{det_inc}`\n- LapPol: `{det_lap}`\n- Keterangan: `{det_ket}`")
 
   if st.sidebar.button("🔄 Refresh Data Form"):
     st.cache_data.clear()
@@ -244,14 +262,14 @@ try:
     df_filtered = df_filtered[df_filtered["Status Aging Pelaporan"].isin(selected_status)]
 
   # ---------------------------------------------------------
-  # 4. Top Metric Scoreboard (Diperbaiki Akurasinya)
+  # 4. Top Metric Scoreboard (Akurat Strict > 30 Hari)
   # ---------------------------------------------------------
   total_site = len(df_filtered)
   count_sudah_submit = len(df_filtered[df_filtered["Status Submission"] == "Sudah Submit"])
   count_belum_submit = len(df_filtered[df_filtered["Status Submission"] == "Belum Submit"])
   
-  # Possible Reject murni berdasarkan Incident > 30 hari
-  count_possible_reject = len(df_filtered[df_filtered["Aging Incident (Hari)"] > 30])
+  # Possible Reject murni > 30 hari (strict dan aman dari NaT)
+  count_possible_reject = len(df_filtered[(df_filtered["Aging Incident (Hari)"].notna()) & (df_filtered["Aging Incident (Hari)"] > 30)])
 
   m1, m2, m3, m4 = st.columns(4)
   
@@ -278,41 +296,45 @@ try:
   st.markdown("---")
 
   # ---------------------------------------------------------
-  # 5. Analisis Keterangan Asuransi (Rusak Parah vs Rusak Parah dan Kehilangan)
+  # 5. Analisis Keterangan Asuransi (3 Kategori: Rusak Parah, Rusak Parah & Kehilangan, Blank)
   # ---------------------------------------------------------
-  st.subheader("📋 Informasi Keterangan Asuransi (Rusak Parah & Kehilangan)")
+  st.subheader("📋 Informasi Keterangan Asuransi (3 Kategori)")
   
-  ket_cols = [c for c in df.columns if any(k in c.lower() for k in ["keterangan", "asuransi", "claim_desc"])]
-  col_ket = ket_cols[0] if ket_cols else None
+  k1, k2, k3 = st.columns(3)
+  
+  rusak_parah_cnt = len(df_filtered[df_filtered["_Clean_Keterangan"] == "Rusak Parah"])
+  rusak_hilang_cnt = len(df_filtered[df_filtered["_Clean_Keterangan"] == "Rusak Parah & Kehilangan"])
+  blank_cnt = len(df_filtered[df_filtered["_Clean_Keterangan"] == "Blank"])
 
-  if col_ket and col_ket in df_filtered.columns:
-    k1, k2 = st.columns(2)
+  with k1:
+    st.markdown(
+        f"""
+        <div style="padding: 14px; border-radius: 8px; background-color: #e0f2fe; border-left: 5px solid #0284c7;">
+            <p style="margin: 0; font-size: 13px; color: #0369a1; font-weight: 600;">RUSAK PARAH</p>
+            <h3 style="margin: 4px 0 0 0; color: #0c4a6e;">{rusak_parah_cnt} Site</h3>
+        </div>
+        """, unsafe_allow_html=True
+    )
     
-    # Hitung jumlah kategori
-    rusak_parah_count = len(df_filtered[df_filtered[col_ket].astype(str).str.contains("Rusak Parah", case=False, na=False) & ~df_filtered[col_ket].astype(str).str.contains("Kehilangan", case=False, na=False)])
-    rusak_hilang_count = len(df_filtered[df_filtered[col_ket].astype(str).str.contains("Kehilangan", case=False, na=False)])
-    
-    with k1:
-      st.markdown(
-          f"""
-          <div style="padding: 14px; border-radius: 8px; background-color: #e0f2fe; border-left: 5px solid #0284c7;">
-              <p style="margin: 0; font-size: 13px; color: #0369a1; font-weight: 600;">KATEGORI: RUSAK PARAH</p>
-              <h3 style="margin: 4px 0 0 0; color: #0c4a6e;">{rusak_parah_count} Site</h3>
-          </div>
-          """, unsafe_allow_html=True
-      )
-      
-    with k2:
-      st.markdown(
-          f"""
-          <div style="padding: 14px; border-radius: 8px; background-color: #f3e8ff; border-left: 5px solid #9333ea;">
-              <p style="margin: 0; font-size: 13px; color: #7e22ce; font-weight: 600;">KATEGORI: RUSAK PARAH DAN KEHILANGAN</p>
-              <h3 style="margin: 4px 0 0 0; color: #581c87;">{rusak_hilang_count} Site</h3>
-          </div>
-          """, unsafe_allow_html=True
-      )
-  else:
-    st.info("Kolom 'Keterangan Asuransi' belum terdeteksi secara otomatis di Google Sheet.")
+  with k2:
+    st.markdown(
+        f"""
+        <div style="padding: 14px; border-radius: 8px; background-color: #f3e8ff; border-left: 5px solid #9333ea;">
+            <p style="margin: 0; font-size: 13px; color: #7e22ce; font-weight: 600;">RUSAK PARAH & KEHILANGAN</p>
+            <h3 style="margin: 4px 0 0 0; color: #581c87;">{rusak_hilang_cnt} Site</h3>
+        </div>
+        """, unsafe_allow_html=True
+    )
+
+  with k3:
+    st.markdown(
+        f"""
+        <div style="padding: 14px; border-radius: 8px; background-color: #f1f5f9; border-left: 5px solid #64748b;">
+            <p style="margin: 0; font-size: 13px; color: #475569; font-weight: 600;">BLANK / KOSONG</p>
+            <h3 style="margin: 4px 0 0 0; color: #1e293b;">{blank_cnt} Site</h3>
+        </div>
+        """, unsafe_allow_html=True
+    )
 
   st.markdown("---")
 
@@ -383,7 +405,7 @@ try:
   st.markdown("---")
   st.markdown("#### 💰 Valuasi BOQ Overview (Sedang Berjalan vs Possible Reject)")
 
-  boq_possible_reject_val = df_filtered[df_filtered["Aging Incident (Hari)"] > 30]['_Parsed_BOQ_Value'].sum()
+  boq_possible_reject_val = df_filtered[(df_filtered["Aging Incident (Hari)"].notna()) & (df_filtered["Aging Incident (Hari)"] > 30)]['_Parsed_BOQ_Value'].sum()
   boq_sedang_berjalan_val = df_filtered[(df_filtered["Aging Incident (Hari)"].isna()) | (df_filtered["Aging Incident (Hari)"] <= 30)]['_Parsed_BOQ_Value'].sum()
 
   b_col1, b_col2 = st.columns(2)
