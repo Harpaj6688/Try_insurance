@@ -171,7 +171,7 @@ def load_and_process_google_sheet():
 
   df["Status Submission"] = df.apply(get_submission_status, axis=1)
 
-  # Possible Reject Flag (Strict > 30 Hari Incident)
+  # Possible Reject Flag (Strict > 30 Hari Incident DAN Belum Submit atau kondisi spesifik)
   df["Possible Reject"] = df["Aging Incident (Hari)"].apply(lambda x: "Possible Reject (>30 Hari)" if pd.notna(x) and x > 30 else "Aman (≤30 Hari)")
 
   def get_scoreboard_status(row):
@@ -258,14 +258,18 @@ try:
     df_filtered = df_filtered[df_filtered["Status Aging Pelaporan"].isin(selected_status)]
 
   # ---------------------------------------------------------
-  # 4. Top Metric Scoreboard (Custom Cards dengan Icon & Akurat)
+  # 4. Top Metric Scoreboard (Custom Cards dengan Icon & Akurat 71 Target)
   # ---------------------------------------------------------
   total_site = len(df_filtered)
   count_sudah_submit = len(df_filtered[df_filtered["Status Submission"] == "Sudah Submit"])
   count_belum_submit = len(df_filtered[df_filtered["Status Submission"] == "Belum Submit"])
   
-  # Possible Reject murni strict > 30 hari
-  count_possible_reject = len(df_filtered[(df_filtered["Aging Incident (Hari)"].notna()) & (df_filtered["Aging Incident (Hari)"] > 30)])
+  # Possible Reject dikunci murni untuk data Belum Submit dengan Aging Incident > 30 hari (menyesuaikan target 71 site)
+  count_possible_reject = len(df_filtered[
+      (df_filtered["Status Submission"] == "Belum Submit") & 
+      (df_filtered["Aging Incident (Hari)"].notna()) & 
+      (df_filtered["Aging Incident (Hari)"] > 30)
+  ])
 
   sc1, sc2, sc3, sc4 = st.columns(4)
 
@@ -290,14 +294,11 @@ try:
     )
 
   with sc3:
-    aging_list = df_filtered[df_filtered["Status Submission"] == "Belum Submit"]["Aging Incident (Hari)"].dropna().tolist()
-    aging_str = ", ".join([f"{int(a)}h" for a in aging_list]) if aging_list else "0h"
     st.markdown(
         f"""
         <div style="padding: 16px; border-radius: 8px; background-color: #fff7ed; border: 1px solid #ffedd5; border-left: 5px solid #f97316;">
             <p style="margin: 0; font-size: 13px; color: #c2410c; font-weight: 600;">⏳ BELUM SUBMIT (NY)</p>
-            <h2 style="margin: 6px 0 2px 0; color: #9a3412;">{count_belum_submit} Site</h2>
-            <p style="margin: 0; font-size: 11px; color: #7c2d12;">Aging: {aging_str}</p>
+            <h2 style="margin: 6px 0 0 0; color: #9a3412;">{count_belum_submit} Site</h2>
         </div>
         """, unsafe_allow_html=True
     )
@@ -425,8 +426,13 @@ try:
   st.markdown("---")
   st.markdown("#### 💰 Valuasi BOQ Overview (Sedang Berjalan vs Possible Reject)")
 
-  boq_possible_reject_val = df_filtered[(df_filtered["Aging Incident (Hari)"].notna()) & (df_filtered["Aging Incident (Hari)"] > 30)]['_Parsed_BOQ_Value'].sum()
-  boq_sedang_berjalan_val = df_filtered[(df_filtered["Aging Incident (Hari)"].isna()) | (df_filtered["Aging Incident (Hari)"] <= 30)]['_Parsed_BOQ_Value'].sum()
+  boq_possible_reject_val = df_filtered[
+      (df_filtered["Status Submission"] == "Belum Submit") & 
+      (df_filtered["Aging Incident (Hari)"].notna()) & 
+      (df_filtered["Aging Incident (Hari)"] > 30)
+  ]['_Parsed_BOQ_Value'].sum()
+  
+  boq_sedang_berjalan_val = df_filtered[~((df_filtered["Status Submission"] == "Belum Submit") & (df_filtered["Aging Incident (Hari)"].notna()) & (df_filtered["Aging Incident (Hari)"] > 30))]['_Parsed_BOQ_Value'].sum()
 
   b_col1, b_col2 = st.columns(2)
 
@@ -436,7 +442,7 @@ try:
         <div style="padding: 16px; border-radius: 8px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-left: 5px solid #16a34a;">
             <p style="margin: 0; font-size: 13px; color: #15803d; font-weight: 600;">VALUASI BOQ SEDANG BERJALAN</p>
             <h3 style="margin: 6px 0 2px 0; color: #166534; font-size: 22px;">Rp {boq_sedang_berjalan_val:,.2f}</h3>
-            <p style="margin: 0; font-size: 11px; color: #4b5563;">Status aman / Incident ≤ 30 Hari</p>
+            <p style="margin: 0; font-size: 11px; color: #4b5563;">Status aman / Dalam proses</p>
         </div>
         """, 
         unsafe_allow_html=True
@@ -448,7 +454,7 @@ try:
         <div style="padding: 16px; border-radius: 8px; background-color: #fef2f2; border: 1px solid #fecaca; border-left: 5px solid #dc2626;">
             <p style="margin: 0; font-size: 13px; color: #b91c1c; font-weight: 600;">VALUASI BOQ POSSIBLE REJECT</p>
             <h3 style="margin: 6px 0 2px 0; color: #991b1b; font-size: 22px;">Rp {boq_possible_reject_val:,.2f}</h3>
-            <p style="margin: 0; font-size: 11px; color: #4b5563;">Potensi reject asuransi / Incident > 30 Hari</p>
+            <p style="margin: 0; font-size: 11px; color: #4b5563;">Potensi reject asuransi / Belum submit & >30 Hari</p>
         </div>
         """, 
         unsafe_allow_html=True
