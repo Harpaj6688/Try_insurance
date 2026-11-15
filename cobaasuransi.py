@@ -140,7 +140,11 @@ def load_and_process_google_sheet():
   df = pd.read_csv(CSV_URL)
   df.columns = df.columns.astype(str).str.strip()
 
-  col_incident = "Tanggal Insiden"
+  # Kolom A diasumsikan adalah Tanggal Insiden / kolom pertama ber-tanggal
+  col_incident = df.columns[0] if len(df.columns) > 0 else "Tanggal Insiden"
+  if "Tanggal Insiden" in df.columns:
+    col_incident = "Tanggal Insiden"
+
   col_lappol = "Tanggal Pelaporan Kepolisian"
   col_ket = "Keterangan Asuransi"
 
@@ -153,7 +157,7 @@ def load_and_process_google_sheet():
 
   today = pd.Timestamp(datetime.now().date())
 
-  # Aging Calculations
+  # Aging / Selisih hari dari Kolom A (Insiden) ke Hari Ini
   df["Aging Incident (Hari)"] = (today - df["_Insiden_Parsed"].dt.normalize()).dt.days
   df["Aging Incident (Hari)"] = df["Aging Incident (Hari)"].apply(lambda x: x if pd.notna(x) and x >= 0 else np.nan)
 
@@ -171,18 +175,20 @@ def load_and_process_google_sheet():
 
   df["Status Submission"] = df.apply(get_submission_status, axis=1)
 
-  # Possible Reject Flag (>30 Hari Incident)
-  df["Possible Reject"] = df["Aging Incident (Hari)"].apply(lambda x: "Possible Reject (>30 Hari)" if pd.notna(x) and x > 30 else "Aman (≤30 Hari)")
-
+  # ATURAN MAIN UTAMA:
+  # - Jika Aging Incident (Kolom A ke hari ini) > 30 hari -> Possible Reject
+  # - Jika <= 30 hari -> Cek status submit / belum submit
   def get_scoreboard_status(row):
     aging = row["Aging Incident (Hari)"]
     if pd.notna(aging) and aging > 30:
       return "Possible Reject"
-    if row["Status Submission"] == "Sudah Submit":
+    elif row["Status Submission"] == "Sudah Submit":
       return "Sudah Submit Asuransi"
-    return "Belum Submit"
+    else:
+      return "Belum Submit"
 
   df["Status Aging Pelaporan"] = df.apply(get_scoreboard_status, axis=1)
+  df["Possible Reject"] = df["Aging Incident (Hari)"].apply(lambda x: "Possible Reject (>30 Hari)" if pd.notna(x) and x > 30 else "Aman (≤30 Hari)")
 
   def clean_keterangan(val):
     if pd.isna(val) or str(val).strip() == "" or str(val).strip().lower() in ["nan", "none", "-", "nat"]:
@@ -233,7 +239,7 @@ try:
   # ---------------------------------------------------------
   st.sidebar.header("🔍 Filter Dashboard")
   st.sidebar.info(f"📅 **Tanggal System:**\n{today_date.strftime('%d %B %Y')}")
-  st.sidebar.caption(f"📌 **Kolom Terhubung:**\n- Insiden: `{det_inc}`\n- LapPol: `{det_lap}`\n- Keterangan: `{det_ket}`")
+  st.sidebar.caption(f"📌 **Kolom Terhubung:**\n- Insiden (Col A): `{det_inc}`\n- LapPol: `{det_lap}`\n- Keterangan: `{det_ket}`")
 
   if st.sidebar.button("🔄 Refresh Data Form"):
     st.cache_data.clear()
@@ -258,26 +264,24 @@ try:
     df_filtered = df_filtered[df_filtered["Status Aging Pelaporan"].isin(selected_status)]
 
   # ---------------------------------------------------------
-  # 4. Top Metric Scoreboard (Custom Cards dengan Icon & Akurat)
+  # 4. Top Metric Scoreboard (Tinggi Kotak 100% Rata Sejajar)
   # ---------------------------------------------------------
   total_site = len(df_filtered)
   count_sudah_submit = len(df_filtered[df_filtered["Status Submission"] == "Sudah Submit"])
   count_belum_submit = len(df_filtered[df_filtered["Status Submission"] == "Belum Submit"])
-  
-  # Possible Reject murni strict > 30 hari dari seluruh incident
-  count_possible_reject = len(df_filtered[
-      (df_filtered["Aging Incident (Hari)"].notna()) & 
-      (df_filtered["Aging Incident (Hari)"] > 30)
-  ])
+  count_possible_reject = len(df_filtered[df_filtered["Status Aging Pelaporan"] == "Possible Reject"])
+
+  card_base_style = "height: 125px; padding: 16px; border-radius: 8px; display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box;"
 
   sc1, sc2, sc3, sc4 = st.columns(4)
 
   with sc1:
     st.markdown(
         f"""
-        <div style="padding: 16px; border-radius: 8px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-left: 5px solid #0284c7;">
+        <div style="{card_base_style} background-color: #f8fafc; border: 1px solid #e2e8f0; border-left: 5px solid #0284c7;">
             <p style="margin: 0; font-size: 13px; color: #64748b; font-weight: 600;">📊 TOTAL INCIDENT</p>
-            <h2 style="margin: 6px 0 0 0; color: #0f172a;">{total_site} incident</h2>
+            <h2 style="margin: 0; color: #0f172a; font-size: 28px;">{total_site} incident</h2>
+            <p style="margin: 0; font-size: 11px; color: transparent;">&nbsp;</p>
         </div>
         """, unsafe_allow_html=True
     )
@@ -285,9 +289,10 @@ try:
   with sc2:
     st.markdown(
         f"""
-        <div style="padding: 16px; border-radius: 8px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-left: 5px solid #16a34a;">
+        <div style="{card_base_style} background-color: #f0fdf4; border: 1px solid #bbf7d0; border-left: 5px solid #16a34a;">
             <p style="margin: 0; font-size: 13px; color: #15803d; font-weight: 600;">✅ SUDAH SUBMIT</p>
-            <h2 style="margin: 6px 0 0 0; color: #166534;">{count_sudah_submit} incident</h2>
+            <h2 style="margin: 0; color: #166534; font-size: 28px;">{count_sudah_submit} incident</h2>
+            <p style="margin: 0; font-size: 11px; color: transparent;">&nbsp;</p>
         </div>
         """, unsafe_allow_html=True
     )
@@ -295,9 +300,10 @@ try:
   with sc3:
     st.markdown(
         f"""
-        <div style="padding: 16px; border-radius: 8px; background-color: #fff7ed; border: 1px solid #ffedd5; border-left: 5px solid #f97316;">
+        <div style="{card_base_style} background-color: #fff7ed; border: 1px solid #ffedd5; border-left: 5px solid #f97316;">
             <p style="margin: 0; font-size: 13px; color: #c2410c; font-weight: 600;">⏳ BELUM SUBMIT (NY)</p>
-            <h2 style="margin: 6px 0 0 0; color: #9a3412;">{count_belum_submit} incident</h2>
+            <h2 style="margin: 0; color: #9a3412; font-size: 28px;">{count_belum_submit} incident</h2>
+            <p style="margin: 0; font-size: 11px; color: transparent;">&nbsp;</p>
         </div>
         """, unsafe_allow_html=True
     )
@@ -305,9 +311,9 @@ try:
   with sc4:
     st.markdown(
         f"""
-        <div style="padding: 16px; border-radius: 8px; background-color: #fef2f2; border: 1px solid #fecaca; border-left: 5px solid #dc2626;">
+        <div style="{card_base_style} background-color: #fef2f2; border: 1px solid #fecaca; border-left: 5px solid #dc2626;">
             <p style="margin: 0; font-size: 13px; color: #b91c1c; font-weight: 600;">⚠️ POSSIBLE REJECT</p>
-            <h2 style="margin: 6px 0 2px 0; color: #991b1b;">{count_possible_reject} incident</h2>
+            <h2 style="margin: 0; color: #991b1b; font-size: 28px;">{count_possible_reject} incident</h2>
             <p style="margin: 0; font-size: 11px; color: #7f1d1d;">>30 Hari Incident</p>
         </div>
         """, unsafe_allow_html=True
@@ -425,15 +431,8 @@ try:
   st.markdown("---")
   st.markdown("#### 💰 Valuasi BOQ Overview (Sedang Berjalan vs Possible Reject)")
 
-  boq_possible_reject_val = df_filtered[
-      (df_filtered["Aging Incident (Hari)"].notna()) & 
-      (df_filtered["Aging Incident (Hari)"] > 30)
-  ]['_Parsed_BOQ_Value'].sum()
-  
-  boq_sedang_berjalan_val = df_filtered[
-      (df_filtered["Aging Incident (Hari)"].isna()) | 
-      (df_filtered["Aging Incident (Hari)"] <= 30)
-  ]['_Parsed_BOQ_Value'].sum()
+  boq_possible_reject_val = df_filtered[df_filtered["Status Aging Pelaporan"] == "Possible Reject"]['_Parsed_BOQ_Value'].sum()
+  boq_sedang_berjalan_val = df_filtered[df_filtered["Status Aging Pelaporan"] != "Possible Reject"]['_Parsed_BOQ_Value'].sum()
 
   b_col1, b_col2 = st.columns(2)
 
